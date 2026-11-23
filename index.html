@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>FTIV 현황판 사진</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root { --ink: #1f2a44; --line: #d5d9df; --eaton: #005eb8; --bg: #eef1f4; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif; background: var(--bg); color: var(--ink); min-height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 14px 16px 10px; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 900; }
+  header p { margin: 4px 0 0; font-size: 14px; color: #52514e; min-height: 20px; }
+  header p.bad { color: #d3262e; font-weight: 700; }
+  .acts { display: flex; gap: 8px; padding: 0 16px 12px; flex-wrap: wrap; }
+  .acts button { flex: 1; min-width: 140px; height: 48px; font: inherit; font-size: 16px; font-weight: 900; border-radius: 10px; border: 1px solid var(--line); background: #fff; color: var(--ink); }
+  .acts button.main { background: var(--eaton); border-color: var(--eaton); color: #fff; }
+  .acts button:disabled { opacity: .45; }
+  .view { flex: 1; padding: 0 16px 16px; }
+  .view img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .view small { display: block; margin-top: 8px; color: #6b7280; font-size: 12.5px; line-height: 1.5; }
+  /* 사진으로 찍을 원본(가로 2200)은 화면 밖에 원래 크기로 그림 */
+  #stage { position: fixed; left: -99999px; top: 0; width: 2200px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FTIV 현황판 사진</h1>
+  <p id="msg">현황판을 그리는 중…</p>
+</header>
+<div class="acts">
+  <button class="main" id="save" disabled>사진 저장</button>
+  <button id="share" hidden>공유 · 사진 앱에 저장</button>
+</div>
+<div class="view"><img id="img" alt="" hidden><small id="tip"></small></div>
+<div id="stage"><div class="ftivb" id="board"></div></div>
+
+<script>
+// 이 페이지는 QR 에 담겨 온 현황판 내용(주소의 # 뒤)을 핸드폰 안에서 그려 사진으로 만든다.
+// # 뒤 내용은 서버로 전송되지 않고, 어디에도 올리지 않는다(check 앱 올리기와 별개).
+const _scriptOnce = {};
+function loadScriptOnce(src){
+  return _scriptOnce[src] || (_scriptOnce[src] = new Promise((res, rej)=>{
+    const s=document.createElement("script"); s.src=src; s.onload=()=>res();
+    s.onerror=()=>{ delete _scriptOnce[src]; rej(new Error("라이브러리를 불러오지 못했습니다 (인터넷 연결 확인)")); };
+    document.head.appendChild(s);
+  }));
+}
+const H2I_URL  = "https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.js";
+const H2C_URL  = "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js";
+const PAKO_URL = "https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako_inflate.min.js";
+async function decodeFtivQr(text){
+  const at = (text||"").indexOf("FTIVQR1.");   // QR 이 check 주소(…#ftivqr=FTIVQR1.…)여도 뒤쪽만 씀
+  if(at < 0) throw new Error("FTIV 현황판 QR 이 아닙니다.");
+  const b64 = text.slice(at+8).replace(/[^A-Za-z0-9\-_]+$/,"").replace(/-/g,"+").replace(/_/g,"/");
+  const bin = atob(b64 + "===".slice((b64.length+3)%4));
+  const u8 = new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  let json;
+  if(typeof DecompressionStream!=="undefined"){
+    json = await new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+  } else { await loadScriptOnce(PAKO_URL); json = window.pako.inflateRaw(u8, {to:"string"}); }
+  const o = JSON.parse(json);
+  if(o.v!==1 && o.v!==2) throw new Error("지원하지 않는 QR 형식입니다. (앱을 새로 고쳐 주세요)");
+  return o;
+}
+
+
+const FTIV_BOARD_CSS = ".ftivb,.ftivb *{box-sizing:border-box}\n.ftivb{width:2200px;font-family:'Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',system-ui,sans-serif;color:#1f2a44;line-height:normal;text-align:left;font-size:16px;font-weight:400}\n.ftivb .frame{width: 2200px; padding: 18px; border-radius: 14px; background: linear-gradient(180deg, #d4d8dc, #b9bec4 40%, #8d939a); box-shadow: 0 18px 40px rgba(40,50,40,.28), inset 0 1px 0 rgba(255,255,255,.7);}\n.ftivb .board{position: relative; background: radial-gradient(ellipse at 30% 0%, #ffffff 0%, #fdfdfb 55%, #f3f4f1 100%); border-radius: 4px; padding: 22px 34px 28px; box-shadow: inset 0 0 0 1px #c9cdd2;}\n.ftivb .top{display: grid; grid-template-columns: 500px 1fr; column-gap: 32px;}\n.ftivb .clock{grid-column: 1; grid-row: 1; font-weight: 900; font-size: 64px; color: #1f2a44; line-height: 1; letter-spacing: 1px; font-variant-numeric: tabular-nums; align-self: center; position: relative; z-index: 1;}\n.ftivb .clock small{font-size: 40px; font-weight: 700; color: #52514e; margin-left: 4px;}\n.ftivb .title{grid-column: 1 / -1; grid-row: 1; text-align: center; color: #1d3f8f;}\n.ftivb .title h1{margin: 0; font-size: 44px; font-weight: 900; letter-spacing: -1px; line-height: 1.15;}\n.ftivb .title h2{margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -.5px;}\n.ftivb .left2{grid-column: 1; grid-row: 2; margin-top: 16px; display: flex; flex-direction: column; gap: 10px;}\n.ftivb .field{display: flex; align-items: baseline; gap: 12px; font-size: 25px; font-weight: 700;}\n.ftivb .field .lab{width: 132px; flex: none; white-space: nowrap; text-align: justify; text-align-last: justify;}\n.ftivb .field .colon{flex: none; margin: 0 -2px 0 -4px;}\n.ftivb .field .workers{display: flex; align-items: baseline; gap: 10px;}\n.ftivb .field .workers .wn{flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; border-bottom: 1px dashed #b8bec7;}\n.ftivb .field .val{flex: 1; min-height: 40px; border-bottom: 2px solid #2b2f36; font-weight: 700; font-size: 26px; color: #222; line-height: 1.1; padding: 0 6px;}\n.ftivb .daysum{margin-top: 6px; flex: 1; display: flex;}\n.ftivb .daysum .cells{flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: 1fr 1fr; border: 2px solid #2b2f36; border-radius: 4px; overflow: hidden;}\n.ftivb .daysum .cell{display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 4px 10px; border-right: 1px solid #b8bec7; border-bottom: 1px solid #b8bec7; background: rgba(255,255,255,.6);}\n.ftivb .daysum .cell:nth-child(4n){border-right: 0;}\n.ftivb .daysum .cell:nth-child(n+5){border-bottom: 0;}\n.ftivb .daysum .c-lab{font-size: 16px; font-weight: 700; color: #52514e; display: flex; align-items: center; gap: 6px; white-space: nowrap;}\n.ftivb .daysum .c-lab i{width: 14px; height: 4px; border-radius: 2px;}\n.ftivb .daysum .c-val{font-size: 30px; font-weight: 900; color: #222; font-variant-numeric: tabular-nums; line-height: 1.05; white-space: nowrap;}\n.ftivb .daysum .c-val small{display: block; font-size: 16px; font-weight: 700; color: #d3262e;}\n.ftivb .trends{grid-column: 2; grid-row: 2; margin-top: 14px; display: grid; grid-template-columns: 220px 420px 1fr 1fr; gap: 18px;}\n.ftivb .trends > .trend{min-width: 0;}\n.ftivb .trend.donut{align-items: stretch;}\n.ftivb .trend .dn{flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 0;}\n.ftivb .trend .dn svg{width: 165px; height: 165px; flex: none; }\n.ftivb .trend .dn svg .dn-c{font-size: 34px; font-weight: 900; fill: #1f2a44; font-variant-numeric: tabular-nums;}\n.ftivb .trend .dn svg .dn-s{font-size: 15px; font-weight: 700; fill: #52514e; font-variant-numeric: tabular-nums;}\n.ftivb .trend .dn-leg{display: grid; grid-template-columns: 14px max-content max-content max-content; align-items: center; gap: 12px 8px; font-size: 18px; white-space: nowrap; font-variant-numeric: tabular-nums;}\n.ftivb .trend .dn-leg .lg-row{display: contents;}\n.ftivb .trend .dn-leg i{width: 14px; height: 14px; border-radius: 3px;}\n.ftivb .trend .dn-leg span{text-align: right; color: #52514e; font-weight: 700;}\n.ftivb .trend .dn-leg em{font-style: normal; text-align: right; font-weight: 900; color: #1f2a44;}\n.ftivb tr.off .timecell,.ftivb tr.off .plancell .plan{opacity: .35;}\n.ftivb .trend{border: 2px solid #2b2f36; border-radius: 4px; padding: 8px 12px 4px; background: rgba(255,255,255,.5); display: flex; flex-direction: column;}\n.ftivb .trend .t-head{display: flex; align-items: baseline; gap: 14px;}\n.ftivb .trend .t-title{font-size: 21px; font-weight: 900; color: #1f2a44; white-space: nowrap;}\n.ftivb .trend .t-title i{display: inline-block; width: 22px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 8px;}\n.ftivb .trend .t-sub{font-size: 17px; font-weight: 700; color: #52514e; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}\n.ftivb .trend svg{display: block; width: 100%; height: 230px; }\n.ftivb .trend svg text{font-family: 'Noto Sans KR', sans-serif; font-size: 15px; fill: #8a8984; font-variant-numeric: tabular-nums;}\n.ftivb table.grid{width: 100%; border-collapse: collapse; margin-top: 18px; table-layout: fixed;}\n.ftivb .grid th,.ftivb .grid td{border: 2px solid #2b2f36; vertical-align: middle;}\n.ftivb .grid th{height: 44px; font-size: 28px; font-weight: 900; letter-spacing: 1px;}\n.ftivb .grid thead tr:first-child th[rowspan]{height: 88px;}\n.ftivb .grid th.sub{font-size: 20px; font-weight: 700; letter-spacing: 0; height: 40px;}\n.ftivb .grid th.sub i{display: inline-block; width: 18px; height: 4px; border-radius: 2px; vertical-align: middle; margin-right: 6px;}\n.ftivb .grid td{height: 108px;}\n.ftivb col.c-pn{width: 140px;}\n.ftivb col.c-time{width: 180px;}\n.ftivb col.c-plan{width: 200px;}\n.ftivb col.c-cum{width: 180px;}\n.ftivb col.c-ng,.ftivb col.c-opr,.ftivb col.c-ovr{width: 118px;}\n.ftivb col.c-etc{width: 124px;}\n.ftivb col.c-act{width: 446px;}\n.ftivb col.c-sign{width: 60px;}\n.ftivb .pncell{position: relative; text-align: center; font-size: 20px; font-weight: 500;}\n.ftivb .pncell .lot{position: absolute; top: 4px; left: 5px; font-size: 14px; font-weight: 700; white-space: nowrap;}\n.ftivb .pncell .ops{display: flex; flex-direction: column; gap: 6px; padding: 18px 6px 0; text-align: left;}\n.ftivb .pncell .op{display: flex; align-items: baseline; gap: 4px;}\n.ftivb .pncell .op em{font-style: normal; font-size: 12px; font-weight: 900; color: #6b7280; flex: none; width: 34px;}\n.ftivb .pncell .who{flex: 1; min-width: 0; min-height: 26px; font-size: 18px; font-weight: 700; border-bottom: 1px dashed #b8bec7; white-space: nowrap; overflow: hidden;}\n.ftivb .timecell{text-align: center; font-size: 23px; font-weight: 700; line-height: 1.35; white-space: nowrap;}\n.ftivb .timecell small{font-size: 20px; font-weight: 700; display: block;}\n.ftivb .ngcell{text-align: center; line-height: 1.15; padding: 0 2px;}\n.ftivb .ngcell b{display: block; font-size: 28px; font-weight: 900; color: #222; font-variant-numeric: tabular-nums;}\n.ftivb .ngcell span{display: block; font-size: 21px; font-weight: 700; color: #d3262e; font-variant-numeric: tabular-nums; letter-spacing: -.5px;}\n.ftivb .ngcell.total b{color: #d3262e;}\n.ftivb .ngcell small{display: block; font-size: 12px; font-weight: 500; color: #52514e; margin-top: 2px; line-height: 1.25; word-break: keep-all;}\n.ftivb .grid th.ng-head{font-size: 24px;}\n.ftivb .grid th.ng-head small{font-size: 15px; font-weight: 700; color: #52514e;}\n.ftivb .grid th.sub{font-size: 16px;}\n.ftivb .grid th.sub i{width: 12px; margin-right: 4px;}\n.ftivb .ngcell.zero b,.ftivb .ngcell.zero span{color: #b7bcc4;}\n.ftivb .plancell{position: relative; padding: 0; overflow: hidden;}\n.ftivb .plancell svg{position: absolute; inset: 0; width: 100%; height: 100%;}\n.ftivb .plancell .plan{position: absolute; top: 4px; left: 8px; font-size: 22px; font-weight: 700; color: #222;}\n.ftivb .plancell .act{position: absolute; right: 28px; bottom: 10px; font-size: 30px; font-weight: 900; color: #d3262e;}\n.ftivb .cumcell{text-align: center; font-size: 32px; font-weight: 900; color: #d3262e;}\n.ftivb .plancell .act.live,.ftivb .cumcell.live{color: #1d6fd1;  }\n.ftivb .plancell .act.ok,.ftivb .cumcell.ok{color: #0f9a73;}\n.ftivb .plancell .act.bad,.ftivb .cumcell.bad{color: #d3262e;}\n.ftivb .notes .idle{}\n.ftivb .notes .idle .tag{font-size: 14px; font-weight: 900; border: 1.5px solid currentColor; border-radius: 4px; padding: 0 4px; margin-right: 6px; vertical-align: 2px;}\n.ftivb .notes{padding: 2px 10px; font-size: 19px; font-weight: 500; line-height: 1.3; vertical-align: top !important;}\n.ftivb .notes .ln{min-height: 34px; padding: 4px 2px 2px; border-bottom: 1px solid #b8bec7;}\n.ftivb .notes .ln:last-child{border-bottom: 0;}\n.ftivb .g{color: #0f9a73;}\n.ftivb .r{color: #d3262e;}\n.ftivb .k{color: #222;}\n.ftivb .signcell{text-align: center;  font-size: 36px; font-weight: 900; color: #222;  border-left: none !important;}\n.ftivb .total-row td{height: 104px;}\n.ftivb .total-row .lab{font-size: 34px; font-weight: 900; text-align: center;}\n.ftivb .special{vertical-align: top !important; padding: 0 !important;}\n.ftivb .special .hdr{display: inline-block; border-right: 2px solid #2b2f36; border-bottom: 2px solid #2b2f36; padding: 2px 26px; font-size: 22px; font-weight: 900;}\n.ftivb .special .body{padding: 2px 12px; font-size: 19px; font-weight: 500; line-height: 1.45;}\n.ftivb table.grid{display:table}.ftivb .top{grid-template-rows:minmax(127px,auto) auto}\n.ftivb .grid th{text-align:center}.ftivb .frame{box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}\n.ftivb b{font-weight:bolder}.ftivb small{font-size:smaller}.ftivb svg{display:block;max-width:none}.ftivb .trend .t-title i,.ftivb .grid th.sub i{display:inline-block}\n.ftivb .daysum .c-lab i,.ftivb .trend .dn-leg i{display:block}\n.ftivb .otseg{display:inline-flex;border:2px solid #2b2f36;border-radius:8px;overflow:hidden;flex:none;align-self:center}\n.ftivb .otseg b{font-size:19px;font-weight:900;height:36px;line-height:36px;padding:0 14px;background:#1f2a44;color:#fff}\n.ftivb .field .workers .wsel{font-size:20px;font-weight:700;height:34px;line-height:32px;border:1px solid #d5d9df;border-radius:6px;background:#fff;color:#1f2a44;padding:0 8px;align-self:center;flex:none}\n.ftivb .who:empty::before,.ftivb .wn:empty::before{content:'\\00a0'}\n.ftivb .ngcell b i,.ftivb .cumcell i{font-style:normal;font-size:.7em;font-weight:700;margin-left:1px}\n.ftivb .grid th small.rwnote{display:block;font-size:13px;font-weight:700;color:#52514e;letter-spacing:0}";
+function ensureFtivCss(){
+  if(document.getElementById("ftivb-css")) return;
+  const st = document.createElement("style"); st.id = "ftivb-css"; st.textContent = FTIV_BOARD_CSS; document.head.appendChild(st);
+}
+function renderFtivBoardV2(root, o){
+  const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+  const OPR = "#2a78d6", OVR = "#eb6834", GREEN = "#0f9a73", RED = "#d3262e";
+  const pct = (n, d) => d ? (n / d * 100).toFixed(2) : "0.00";
+  const fmtPct = v => v.toFixed(v < 10 ? 2 : 1) + "%";
+  const md = d => `${+d.slice(5, 7)}/${+d.slice(8)}`;
+  const minutesOf = (a, b) => { const [h1, m1] = a.split(":").map(Number), [h2, m2] = b.split(":").map(Number); return ((h2 * 60 + m2) - (h1 * 60 + m1) + 1440) % 1440; };
+  const num = v => Number(v || 0).toLocaleString();
+  const lines = (t, cls) => String(t || "").split("\n").filter(Boolean).map(x => `<div class="${cls}">${esc(x)}</div>`).join("");
+  const DIAG = '<svg viewBox="0 0 100 100" preserveAspectRatio="none"><line x1="2" y1="98" x2="98" y2="4" stroke="#2b2f36" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg>';
+
+  const [y, mo, d] = String(o.d).split("-");
+  const lot = `COFTV${y.slice(2)}${mo}${d}${o.s}1`;
+  const at = String(o.at || "");
+  const clock = at.length >= 16 ? `${at.slice(11, 16)}<small>(${"일월화수목금토"[new Date(+at.slice(0,4), +at.slice(5,7)-1, +at.slice(8,10)).getDay()]})</small>` : "";
+
+  // rw = 재작업분 [재작업 양품 누적, 재작업 불량, OPR, OVR, 기타, 재작업 투입]. 숫자 = 최초 + 재작업 불량, ( ) = 재작업 불량, % 는 전체 검사 대비
+  const ngCells = (ng, opr, ovr, etc, input, detail, rw) => {
+    if(ng == null) return '<td class="ngcell"></td>'.repeat(4);
+    const R = rw || [], den = input + (R[5] || 0);
+    const c = (n, r, cls, extra) => `<td class="ngcell ${cls} ${n + r ? "" : "zero"}"><b>${n + r}${r ? `<i>(${r})</i>` : ""}</b><span>(${pct(n + r, den)}%)</span>${extra || ""}</td>`;
+    return c(ng, R[1] || 0, "total") + c(opr || 0, R[2] || 0, "") + c(ovr || 0, R[3] || 0, "") + c(etc || 0, R[4] || 0, "", detail ? `<small>${esc(detail)}</small>` : "");
+  };
+  const rwTag = rw => rw && rw[0] ? `<i>(${rw[0]})</i>` : "";
+  const idleLines = (i, idles, rt) => (rt ? `<div data-pair="${i}-rt">${lines(rt, "ln r")}</div>` : "") +
+    idles.map((it, j) => it[0] === "n"
+      ? `<div class="ln idle ${esc(it[5] || "k")}" data-pair="${i}-${j}">${esc(it[2])}</div>`
+      : `<div class="ln idle ${it[0] === "p" ? "g" : "r"}" data-pair="${i}-${j}"><span class="tag">${it[0] === "p" ? "계획" : "비계획"}</span>${esc(it[1])} ${esc(it[2])}</div>`).join("");
+  const actLines = (i, idles, rt) => (rt ? `<div data-pair="${i}-rt"></div>` : "") +
+    idles.map((it, j) => {
+      const end = it[0] === "n" ? "" : it[3] ? `<b>~${esc(it[3])}</b> <small>(${minutesOf(it[1], it[3])}분)</small> ` : `<span class="${it[0] === "p" ? "g" : "r"}">(진행 중)</span> `;
+      return `<div class="ln idle k" data-pair="${i}-${j}">${end}${esc(it[4] || "")}</div>`;
+    }).join("");
+
+  const rows = (o.r || []).map((r, i) => {
+    const [time, on, pMin, pMax, good, actCls, cum, cumCls, ng, opr, ovr, etc, input, w50, w10, idles, rt, sign, detail, rw] = r;
+    const [s, e] = String(time).split("~");
+    return `
+      <tr class="${on ? "" : "off"}">
+        <td class="pncell">${i === 0 ? `<span class="lot">${lot}</span>` : ""}
+          <div class="ops">
+            <div class="op"><em>OP50</em><span class="who">${esc(w50 || "")}</span></div>
+            <div class="op"><em>OP10</em><span class="who">${esc(w10 || "")}</span></div>
+          </div></td>
+        <td class="timecell">${esc(s)}~${esc(e)}<small>${on ? `(${minutesOf(s, e)}분)` : "잔업 없음"}</small></td>
+        <td class="plancell">${DIAG}<span class="plan">${pMin}~${pMax}</span><span class="act ${actCls || ""}">${good ?? ""}</span></td>
+        <td class="cumcell ${cumCls || ""}">${good == null ? "" : cum + rwTag(rw)}</td>
+        ${ngCells(ng, opr, ovr, etc, input, detail, rw)}
+        <td class="notes">${idleLines(i, idles || [], rt)}</td>
+        <td class="notes">${actLines(i, idles || [], rt)}</td>
+        <td class="signcell">${sign ? "M" : ""}</td>
+      </tr>`;
+  }).join("");
+
+  const t = o.t || [0, 0, "", 0, 0, 0, 0, 0, ""];
+  const [planSum, cumT, totCls, ngSum, oprSum, ovrSum, etcSum, totalInput, totDetail] = t;
+  const sx = o.sx || [];
+  const wc = o.wc || (o.w || []).length || 1;
+  const workers = `<span class="wsel">${wc}명</span>` + Array.from({length: wc}, (_, i) => `<span class="wn">${esc((o.w || [])[i] || "")}</span>`).join("");
+
+  // 당일 집계
+  const cell = (lab, val, rate, color) => `<div class="cell"><div class="c-lab">${color ? `<i style="background:${color}"></i>` : ""}${lab}</div><div class="c-val">${val}${rate ? `<small>${rate}</small>` : ""}</div></div>`;
+  const ds = o.ds;
+  const daysum = ds ? `<div class="cells">
+      ${cell("총수량", num(ds[0]))}
+      ${cell("양품수량", num(ds[1]), ds[2] ? `<span style="color:#52514e">이전 대기품 ${ds[2]} 포함</span>` : "")}
+      ${cell("최종불량", num(ds[3]))}
+      ${cell("재작업 대기", num(ds[4]))}
+      ${cell("최초불량", num(ds[5]), ds[0] ? fmtPct(ds[5] / ds[0] * 100) : "")}
+      ${cell("OPR", num(ds[6]), ds[0] ? fmtPct(ds[6] / ds[0] * 100) : "", OPR)}
+      ${cell("OVR", num(ds[7]), ds[0] ? fmtPct(ds[7] / ds[0] * 100) : "", OVR)}
+      ${cell("양품률", ds[0] ? fmtPct(ds[8] / ds[0] * 100) : "-")}
+    </div>` : "";
+
+  // 도넛
+  const donutSvg = (segs, total, center, sub) => {
+    const R = 64, C = 2 * Math.PI * R; let off = 0, arcs = "";
+    for(const s of segs){
+      if(!s.v || !total) continue;
+      const len = Math.min(s.v / total, 1) * C;
+      arcs += `<circle r="${R}" cx="90" cy="90" fill="none" stroke="${s.c}" stroke-width="26" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 90 90)"/>`;
+      off += len;
+    }
+    return `<svg viewBox="0 0 180 180"><circle r="${R}" cx="90" cy="90" fill="none" stroke="#e7e9ec" stroke-width="26"/>${arcs}
+      <text x="90" y="${sub ? 92 : 102}" text-anchor="middle" class="dn-c">${center}</text>${sub ? `<text x="90" y="118" text-anchor="middle" class="dn-s">${sub}</text>` : ""}</svg>`;
+  };
+  const du = o.du || [0, planSum];
+  const achCol = cumT >= du[0] && cumT <= du[1] ? GREEN : RED;
+  const achDonut = donutSvg([{ v: Math.min(cumT, planSum), c: achCol }], planSum, `${Math.round(planSum ? cumT / planSum * 100 : 0)}%`, `${num(cumT)} / ${num(planSum)}`);
+  const segs = [{ k: "OPR", v: oprSum || 0, c: OPR }, { k: "OVR", v: ovrSum || 0, c: OVR }, { k: "기타", v: etcSum || 0, c: "#9aa1ab" }];
+  const leg = segs.map(s => `<div class="lg-row"><i style="background:${s.c}"></i><b>${s.k}</b><span>${s.v}개</span><em>${ngSum ? (s.v / ngSum * 100).toFixed(1) : "0.0"}%</em></div>`).join("");
+  const ngDonut = donutSvg(segs, ngSum, ngSum ? `${ngSum}` : "0", ngSum ? "불량 개" : "불량 없음") + `<div class="dn-leg">${leg}</div>`;
+
+  // 트렌드
+  const t0 = o.t0 ? new Date(o.t0 + "T00:00:00Z").getTime() : 0;
+  const pts = (o.tr || []).map(([off, input, opr, ovr]) => ({ day: new Date(t0 + off * 864e5).toISOString().slice(0, 10), input, opr, ovr, oprR: input ? opr / input * 100 : 0, ovrR: input ? ovr / input * 100 : 0 }));
+  const sum = k => pts.reduce((a, p) => a + p[k], 0);
+  const tin = sum("input"), avgOpr = tin ? sum("opr") / tin * 100 : 0, avgOvr = tin ? sum("ovr") / tin * 100 : 0;
+  const tc = o.tc, today = k => tc && tc[0] ? `당일 ${fmtPct(tc[k] / tc[0] * 100)}` : "";
+
+  root.innerHTML = `<div class="frame"><div class="board">
+      <div class="top">
+        <div class="clock"></div>
+        <div class="title"><h1>${esc(o.line || "FTIV")} LINE 생산 현황 Board</h1><h2>(Fuel Tank Isolation Valve)</h2></div>
+        <div class="left2">
+          <div class="field"><span class="lab">생 산 일 자</span><span class="colon">:</span><span class="val">${esc(o.d)}(${esc(o.s)})</span>
+            <span class="otseg"><b>${o.ot ? "잔업" : "정시"}</b></span></div>
+          <div class="field"><span class="lab">작 업 자</span><span class="colon">:</span><span class="val workers">${workers}</span></div>
+          <div class="daysum">${daysum}</div>
+        </div>
+        <div class="trends">
+          <div class="trend donut"><div class="t-head"><span class="t-title">목표 달성률</span></div><div class="dn">${achDonut}</div></div>
+          <div class="trend donut"><div class="t-head"><span class="t-title">불량 점유율</span></div><div class="dn">${ngDonut}</div></div>
+          <div class="trend"><div class="t-head"><span class="t-title"><i style="background:${OPR}"></i>OPR 리크 불량률 (일별)</span><span class="t-sub">${today(1)}</span></div><svg data-ch="opr"></svg></div>
+          <div class="trend"><div class="t-head"><span class="t-title"><i style="background:${OVR}"></i>OVR 리크 불량률 (일별)</span><span class="t-sub">${today(2)}</span></div><svg data-ch="ovr"></svg></div>
+        </div>
+      </div>
+      <table class="grid">
+        <colgroup><col class="c-pn"><col class="c-time"><col class="c-plan"><col class="c-cum"><col class="c-ng"><col class="c-opr"><col class="c-ovr"><col class="c-etc"><col><col class="c-act"><col class="c-sign"></colgroup>
+        <thead>
+          <tr><th rowspan="2">Part No</th><th rowspan="2">작업시간</th><th rowspan="2">계획/실적</th><th rowspan="2">누적수량<small class="rwnote">( ) 재작업 양품</small></th><th colspan="4" class="ng-head">불량 <small>수량 / % · ( ) 재작업 불량</small></th><th rowspan="2">비가동요인</th><th rowspan="2" colspan="2">조치사항</th></tr>
+          <tr><th class="sub">총불량</th><th class="sub"><i style="background:${OPR}"></i>OPR</th><th class="sub"><i style="background:${OVR}"></i>OVR</th><th class="sub">기타</th></tr>
+        </thead>
+        <tbody>
+          ${rows}
+          <tr class="total-row">
+            <td class="lab" colspan="2">Total</td>
+            <td class="plancell">${DIAG}<span class="plan">${planSum}</span><span class="act ${totCls || ""}">${cumT}</span></td>
+            <td class="cumcell ${totCls || ""}">${cumT}${rwTag(o.tw)}</td>
+            ${ngCells(ngSum, oprSum, ovrSum, etcSum, totalInput, totDetail, o.tw)}
+            <td class="special" colspan="3"><span class="hdr">특이사항</span>
+              <div class="body">${lines(sx[0], "r")}${lines(sx[1], "r")}<div class="k" style="white-space:pre-line">${esc(sx[2] || "")}</div></div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div></div>`;
+
+  // 비가동요인 줄 ↔ 조치사항 줄 높이 맞춤
+  const g = {};
+  root.querySelectorAll("[data-pair]").forEach(el => { (g[el.dataset.pair] = g[el.dataset.pair] || []).push(el); });
+  Object.values(g).forEach(els => { if(els.length < 2) return; const h = Math.max(...els.map(e => e.offsetHeight)); els.forEach(e => { e.style.minHeight = h + "px"; }); });
+
+  // 트렌드 차트
+  const niceMax = v => { const st = [0.5, 1, 2, 2.5, 5, 10, 20, 25, 50, 100]; const tt = v / 4; return (st.find(s => s >= tt) || 100) * 4; };
+  const drawChart = (svg, key, color, avg) => {
+    const W = svg.clientWidth || 425, H = svg.clientHeight || 230, m = { l: 52, r: 14, t: 14, b: 30 };
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    const n = pts.length;
+    if(!n){ svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">데이터 없음</text>`; return; }
+    const ymax = niceMax(Math.max(...pts.map(p => p[key])) * 1.05 || 1);
+    const x = i => m.l + (n === 1 ? (W - m.l - m.r) / 2 : i * (W - m.l - m.r) / (n - 1));
+    const yv = v => m.t + (1 - v / ymax) * (H - m.t - m.b);
+    let s = "";
+    for(let k = 0; k <= 4; k++){
+      const v = ymax * k / 4, yy = yv(v).toFixed(1);
+      s += `<line x1="${m.l}" x2="${W - m.r}" y1="${yy}" y2="${yy}" stroke="${k ? "#e4e3de" : "#b9b8b1"}" stroke-width="1"/>`;
+      s += `<text x="${m.l - 8}" y="${+yy + 5}" text-anchor="end">${v % 1 ? v.toFixed(1) : v}%</text>`;
+    }
+    const step = Math.max(1, Math.ceil(n / 8)); let lastLabelX = -99;
+    pts.forEach((p, i) => {
+      const monthStart = i === 0 || p.day.slice(5, 7) !== pts[i - 1].day.slice(5, 7);
+      if((n <= 60 ? i % step === 0 : monthStart) && x(i) - lastLabelX > 56){
+        s += `<text x="${x(i).toFixed(1)}" y="${H - 7}" text-anchor="middle">${n <= 60 ? md(p.day) : +p.day.slice(5, 7) + "월"}</text>`;
+        lastLabelX = x(i);
+      }
+    });
+    const si = pts.findIndex(p => p.day === o.d);
+    if(si >= 0) s += `<rect x="${(x(si) - 7).toFixed(1)}" y="${m.t}" width="14" height="${H - m.t - m.b}" fill="#005eb8" opacity=".09" rx="3"/>`;
+    const ay = yv(avg).toFixed(1);
+    s += `<line x1="${m.l}" x2="${W - m.r}" y1="${ay}" y2="${ay}" stroke="#52514e" stroke-width="1.2" stroke-dasharray="6 5"/>`;
+    s += `<text x="${m.l + 6}" y="${+ay - 6}" style="fill:#52514e">평균 ${fmtPct(avg)}</text>`;
+    s += `<path d="${pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + yv(p[key]).toFixed(1)).join("")}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+    if(n <= 45) pts.forEach((p, i) => { s += `<circle cx="${x(i).toFixed(1)}" cy="${yv(p[key]).toFixed(1)}" r="3.5" fill="${color}"/>`; });
+    if(si >= 0) s += `<circle cx="${x(si).toFixed(1)}" cy="${yv(pts[si][key]).toFixed(1)}" r="7" fill="${color}" stroke="#fff" stroke-width="2.5"/>`;
+    svg.innerHTML = s;
+  };
+  drawChart(root.querySelector('svg[data-ch="opr"]'), "oprR", OPR, avgOpr);
+  drawChart(root.querySelector('svg[data-ch="ovr"]'), "ovrR", OVR, avgOvr);
+}
+
+function ensureFtivCss(){
+  if(document.getElementById("ftivb-css")) return;
+  const st = document.createElement("style"); st.id = "ftivb-css"; st.textContent = FTIV_BOARD_CSS; document.head.appendChild(st);
+}
+
+(async function(){
+  const $ = id => document.getElementById(id);
+  const say = (t, bad) => { $("msg").textContent = t; $("msg").classList.toggle("bad", !!bad); };
+  let file = null;
+  const download = () => {
+    const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name;
+    document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  };
+  const share = async () => { try { await navigator.share({ files: [file], title: file.name }); } catch (e) {} };
+  try {
+    const h = decodeURIComponent(location.hash || "");
+    if (h.indexOf("FTIVQR1.") < 0) { say("현황판의 [사진 QR] 을 핸드폰 카메라로 찍어서 들어와 주세요.", true); return; }
+    const o = await decodeFtivQr(h);
+    if (o.v !== 2) throw new Error("예전 형식의 QR 입니다. 현황판 프로그램을 최신으로 바꿔 주세요.");
+    ensureFtivCss();
+    const node = $("board");
+    renderFtivBoardV2(node, o);
+    try { await Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 2500))]); } catch (e) {}
+    renderFtivBoardV2(node, o);   // 글꼴이 들어온 뒤 줄 높이·차트 크기를 다시 맞춤
+    let blob = null;
+    try {
+      await loadScriptOnce(H2I_URL);
+      blob = await window.htmlToImage.toBlob(node, { pixelRatio: 1.2, backgroundColor: "#ffffff", type: "image/jpeg", quality: 0.88, skipFonts: true });
+    } catch (e) { blob = null; }
+    if (!blob || blob.size < 5000) {
+      await loadScriptOnce(H2C_URL);
+      const cv = await window.html2canvas(node, { scale: 1.2, backgroundColor: "#ffffff" });
+      blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.92));
+    }
+    file = new File([blob], `FTIV_${o.d}_${o.s}.jpg`, { type: "image/jpeg" });
+    const img = $("img"); img.src = URL.createObjectURL(blob); img.hidden = false;
+    $("save").disabled = false; $("save").onclick = download;
+    const canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+    if (canShare) { $("share").hidden = false; $("share").onclick = share; }
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    say(`${o.d} ${o.s === "A" ? "주간" : "야간"} 현황판`);
+    if (ios) {
+      $("tip").textContent = "아이폰: [공유 · 사진 앱에 저장] → [이미지 저장] 을 누르거나, 아래 사진을 길게 눌러 [사진 앱에 저장] 을 고르세요.";
+    } else {
+      download();   // 안드로이드: 바로 내려받기 → 갤러리(다운로드)에 저장됨
+      $("tip").textContent = "사진이 내려받아졌습니다(갤러리의 다운로드 폴더). 안 받아졌으면 [사진 저장] 을 눌러 주세요.";
+    }
+  } catch (e) {
+    say("사진을 만들지 못했습니다: " + (e && e.message || e), true);
+  }
+})();
+</script>
+</body>
+</html>
